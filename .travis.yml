@@ -1,0 +1,15 @@
+language: python
+sudo: false
+python:
+  - "2.7"
+  - "3.3"
+  - "3.4"
+install:
+  - pip install --use-mirrors pep8 pyflakes troposphere
+before_script:
+  - pep8 --version
+  - pep8 --ignore=E501 generate_cf_template.py
+  - pyflakes --version
+  - pyflakes generate_cf_template.py
+script:
+  - python generate_cf_template.py

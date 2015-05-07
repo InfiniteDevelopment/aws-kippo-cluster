@@ -1,0 +1,360 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "Kippo cluster CloudFormation stack",
+    "Mappings": {
+        "Ec2AmiMap": {
+            "ap-northeast-1": {
+                "AmiId": "ami-c011d4c0"
+            },
+            "ap-southeast-1": {
+                "AmiId": "ami-76546924"
+            },
+            "cn-north-1": {
+                "AmiId": "ami-78d84541"
+            },
+            "eu-central-1": {
+                "AmiId": "ami-00dae61d"
+            },
+            "eu-west-1": {
+                "AmiId": "ami-2396f654"
+            },
+            "sa-east-1": {
+                "AmiId": "ami-75b23768"
+            },
+            "us-east-1": {
+                "AmiId": "ami-f63b3e9e"
+            },
+            "us-gov-west-1": {
+                "AmiId": "ami-85fa9ba6"
+            },
+            "us-west-1": {
+                "AmiId": "ami-057f9d41"
+            }
+        }
+    },
+    "Outputs": {
+        "ElbEndpoint": {
+            "Description": "ELB endpoint address",
+            "Value": {
+                "Fn::GetAtt": [
+                    "Elb",
+                    "DNSName"
+                ]
+            }
+        },
+        "RdsEndpoint": {
+            "Description": "RDS endpoint address",
+            "Value": {
+                "Fn::GetAtt": [
+                    "RdsInstance",
+                    "Endpoint.Address"
+                ]
+            }
+        }
+    },
+    "Parameters": {
+        "Ec2InstanceType": {
+            "Default": "t2.micro",
+            "Description": "Instance type of the EC2 instances",
+            "Type": "String"
+        },
+        "Ec2SubnetIdList": {
+            "Description": "List of subnet IDs in which to create the EC2 instances",
+            "Type": "List<AWS::EC2::Subnet::Id>"
+        },
+        "ElbSubnetIdList": {
+            "Description": "List of subnet IDs in which to create the ELB",
+            "Type": "List<AWS::EC2::Subnet::Id>"
+        },
+        "KeyName": {
+            "Description": "Name of the keypair to install on the EC2 instances",
+            "Type": "AWS::EC2::KeyPair::KeyName"
+        },
+        "KippoSensorCount": {
+            "Default": "1",
+            "Description": "Number of kippo sensors to create",
+            "Type": "Number"
+        },
+        "RdsInstanceType": {
+            "Default": "t2.micro",
+            "Description": "Instance type of the RDS instance",
+            "Type": "String"
+        },
+        "RdsRootPassword": {
+            "Description": "Password to use for the root RDS user",
+            "Type": "String"
+        },
+        "RdsStorage": {
+            "Default": "20",
+            "Description": "Amount of storage (GB) for the RDS instance",
+            "Type": "Number"
+        },
+        "RdsSubnetIdList": {
+            "Description": "List of subnet IDs in which to create the RDS instance",
+            "Type": "List<AWS::EC2::Subnet::Id>"
+        },
+        "RealSshPort": {
+            "Description": "Port number to use for the real SSH service",
+            "Type": "Number"
+        },
+        "VpcId": {
+            "Description": "ID of the VPC in which to create the kippo cluster",
+            "Type": "AWS::EC2::VPC::Id"
+        }
+    },
+    "Resources": {
+        "Asg": {
+            "Properties": {
+                "DesiredCapacity": {
+                    "Ref": "KippoSensorCount"
+                },
+                "HealthCheckGracePeriod": 1800,
+                "HealthCheckType": "ELB",
+                "LaunchConfigurationName": {
+                    "Ref": "LaunchConfiguration"
+                },
+                "LoadBalancerNames": [
+                    {
+                        "Ref": "Elb"
+                    }
+                ],
+                "MaxSize": {
+                    "Ref": "KippoSensorCount"
+                },
+                "MinSize": {
+                    "Ref": "KippoSensorCount"
+                },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "PropagateAtLaunch": "true",
+                        "Value": "kippo-sensor"
+                    }
+                ],
+                "VPCZoneIdentifier": {
+                    "Ref": "Ec2SubnetIdList"
+                }
+            },
+            "Type": "AWS::AutoScaling::AutoScalingGroup"
+        },
+        "Ec2SecurityGroup": {
+            "Properties": {
+                "GroupDescription": "Security group for the kippo sensor ASG",
+                "SecurityGroupIngress": [
+                    {
+                        "CidrIp": "0.0.0.0/0",
+                        "FromPort": 22,
+                        "IpProtocol": "tcp",
+                        "ToPort": 22
+                    },
+                    {
+                        "CidrIp": "0.0.0.0/0",
+                        "FromPort": {
+                            "Ref": "RealSshPort"
+                        },
+                        "IpProtocol": "tcp",
+                        "ToPort": {
+                            "Ref": "RealSshPort"
+                        }
+                    },
+                    {
+                        "FromPort": 80,
+                        "IpProtocol": "tcp",
+                        "SourceSecurityGroupId": {
+                            "Ref": "ElbSecurityGroup"
+                        },
+                        "ToPort": 80
+                    },
+                    {
+                        "FromPort": 443,
+                        "IpProtocol": "tcp",
+                        "SourceSecurityGroupId": {
+                            "Ref": "ElbSecurityGroup"
+                        },
+                        "ToPort": 443
+                    }
+                ],
+                "VpcId": {
+                    "Ref": "VpcId"
+                }
+            },
+            "Type": "AWS::EC2::SecurityGroup"
+        },
+        "Elb": {
+            "Properties": {
+                "CrossZone": "true",
+                "HealthCheck": {
+                    "HealthyThreshold": 2,
+                    "Interval": 120,
+                    "Target": "HTTP:80/kippo-graph/",
+                    "Timeout": 60,
+                    "UnhealthyThreshold": 5
+                },
+                "Listeners": [
+                    {
+                        "InstancePort": 80,
+                        "LoadBalancerPort": 80,
+                        "Protocol": "http"
+                    },
+                    {
+                        "InstancePort": 443,
+                        "LoadBalancerPort": 443,
+                        "Protocol": "tcp"
+                    }
+                ],
+                "Scheme": "internet-facing",
+                "SecurityGroups": [
+                    {
+                        "Ref": "ElbSecurityGroup"
+                    }
+                ],
+                "Subnets": {
+                    "Ref": "ElbSubnetIdList"
+                }
+            },
+            "Type": "AWS::ElasticLoadBalancing::LoadBalancer"
+        },
+        "ElbSecurityGroup": {
+            "Properties": {
+                "GroupDescription": "Security group for the kippo sensor ELB",
+                "SecurityGroupIngress": [
+                    {
+                        "CidrIp": "0.0.0.0/0",
+                        "FromPort": 80,
+                        "IpProtocol": "tcp",
+                        "ToPort": 80
+                    },
+                    {
+                        "CidrIp": "0.0.0.0/0",
+                        "FromPort": 443,
+                        "IpProtocol": "tcp",
+                        "ToPort": 443
+                    }
+                ],
+                "VpcId": {
+                    "Ref": "VpcId"
+                }
+            },
+            "Type": "AWS::EC2::SecurityGroup"
+        },
+        "LaunchConfiguration": {
+            "Properties": {
+                "AssociatePublicIpAddress": "true",
+                "ImageId": {
+                    "Fn::FindInMap": [
+                        "Ec2AmiMap",
+                        {
+                            "Ref": "AWS::Region"
+                        },
+                        "AmiId"
+                    ]
+                },
+                "InstanceType": {
+                    "Ref": "Ec2InstanceType"
+                },
+                "KeyName": {
+                    "Ref": "KeyName"
+                },
+                "SecurityGroups": [
+                    {
+                        "Ref": "Ec2SecurityGroup"
+                    }
+                ],
+                "UserData": {
+                    "Fn::Base64": {
+                        "Fn::Join": [
+                            "\n",
+                            [
+                                "#cloud-config",
+                                "repo_upgrade: security",
+                                "runcmd:",
+                                " - \"/usr/bin/wget -O /tmp/configure_kippo_sensor.sh https://raw.githubusercontent.com/cdodd/aws-kippo-cluster/master/bootstrap/configure_kippo_sensor.sh\"",
+                                {
+                                    "Fn::Join": [
+                                        "",
+                                        [
+                                            " - \"bash /tmp/configure_kippo_sensor.sh",
+                                            " ",
+                                            {
+                                                "Fn::GetAtt": [
+                                                    "RdsInstance",
+                                                    "Endpoint.Address"
+                                                ]
+                                            },
+                                            " ",
+                                            {
+                                                "Ref": "RdsRootPassword"
+                                            },
+                                            " ",
+                                            {
+                                                "Ref": "RealSshPort"
+                                            },
+                                            "\""
+                                        ]
+                                    ]
+                                }
+                            ]
+                        ]
+                    }
+                }
+            },
+            "Type": "AWS::AutoScaling::LaunchConfiguration"
+        },
+        "RdsInstance": {
+            "Properties": {
+                "AllocatedStorage": {
+                    "Ref": "RdsStorage"
+                },
+                "DBInstanceClass": {
+                    "Ref": "RdsInstanceType"
+                },
+                "DBInstanceIdentifier": "kippo-database",
+                "DBSubnetGroupName": {
+                    "Ref": "RdsSubnetGroup"
+                },
+                "Engine": "MySQL",
+                "EngineVersion": "5.6.22",
+                "MasterUserPassword": {
+                    "Ref": "RdsRootPassword"
+                },
+                "MasterUsername": "root",
+                "MultiAZ": "true",
+                "Port": 3306,
+                "VPCSecurityGroups": [
+                    {
+                        "Ref": "RdsSecurityGroup"
+                    }
+                ]
+            },
+            "Type": "AWS::RDS::DBInstance"
+        },
+        "RdsSecurityGroup": {
+            "Properties": {
+                "GroupDescription": "Security group for the kippo RDS instance",
+                "SecurityGroupIngress": [
+                    {
+                        "FromPort": 3306,
+                        "IpProtocol": "tcp",
+                        "SourceSecurityGroupId": {
+                            "Ref": "Ec2SecurityGroup"
+                        },
+                        "ToPort": 3306
+                    }
+                ],
+                "VpcId": {
+                    "Ref": "VpcId"
+                }
+            },
+            "Type": "AWS::EC2::SecurityGroup"
+        },
+        "RdsSubnetGroup": {
+            "Properties": {
+                "DBSubnetGroupDescription": "Subnet group for the kippo RDS instance",
+                "SubnetIds": {
+                    "Ref": "RdsSubnetIdList"
+                }
+            },
+            "Type": "AWS::RDS::DBSubnetGroup"
+        }
+    }
+}
